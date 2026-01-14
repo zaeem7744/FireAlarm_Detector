@@ -19,8 +19,9 @@
 #define I2S_SD   2   // GPIO2  - data in (SD / DOUT)
 #define I2S_SCK  4   // GPIO4  - bit clock (BCLK / SCK)
 
-#define SAMPLE_RATE   16000
-#define I2S_READ_LEN  1024
+#define SAMPLE_RATE        16000
+#define SAMPLES_PER_PACKET 512
+#define I2S_READ_LEN       SAMPLES_PER_PACKET
 
 // NOTE: Many MEMS mics (e.g. INMP441) output on the LEFT channel when L/R pin is tied to GND.
 // So we configure I2S to read the LEFT channel.
@@ -46,7 +47,7 @@ i2s_pin_config_t pin_config = {
 };
 
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(921600);   // high baud to stream 16kHz 16-bit audio in real time
     delay(2000); // wait for Serial USB to connect
     Serial.println("MEMS microphone ready (ESP32-S3 Super Mini)");
 
@@ -64,12 +65,15 @@ void setup() {
     }
 }
 
+// Buffer for one I2S frame and one PCM frame
+static int32_t i2s_buffer[I2S_READ_LEN];
+static int16_t pcm_buffer[SAMPLES_PER_PACKET];
+
 void loop() {
-    int32_t buffer[I2S_READ_LEN];
     size_t bytes_read = 0;
 
     // Read samples from MEMS microphone
-    esp_err_t err = i2s_read(I2S_NUM_0, buffer, sizeof(buffer), &bytes_read, portMAX_DELAY);
+    esp_err_t err = i2s_read(I2S_NUM_0, i2s_buffer, sizeof(i2s_buffer), &bytes_read, portMAX_DELAY);
     if (err != ESP_OK) {
         Serial.print("i2s_read error: ");
         Serial.println(err);
@@ -80,12 +84,25 @@ void loop() {
     // Convert raw 32-bit samples to a simple "level" value.
     // Most I2S mics put useful data in the high bits, so we right-shift.
     int sample_count = bytes_read / sizeof(int32_t);
+    if (sample_count > SAMPLES_PER_PACKET) sample_count = SAMPLES_PER_PACKET;
+
     long long sum_abs = 0;
     for (int i = 0; i < sample_count; i++) {
-        int32_t s = buffer[i] >> 14;   // shrink to ~18-bit / 16-bit range
-        if (s < 0) s = -s;
-        sum_abs += s;
+        int32_t s = i2s_buffer[i];
+        // Down-shift to ~16-bit range for both level and PCM.
+        // Use even smaller shift (>> 10) to further boost volume.
+        s >>= 10;
+        if (s < -32768) s = -32768;
+        if (s >  32767) s =  32767;
+        int32_t abs_s = s < 0 ? -s : s;
+        sum_abs += abs_s;
+        pcm_buffer[i] = (int16_t)s;
     }
+    // Zero any remaining PCM samples in the packet
+    for (int i = sample_count; i < SAMPLES_PER_PACKET; i++) {
+        pcm_buffer[i] = 0;
+    }
+
     int32_t level = (int32_t)(sum_abs / sample_count);
 
     // Map level to a simple ASCII bar for serial output
@@ -96,14 +113,14 @@ void loop() {
     if (barLen > MAX_BAR) barLen = MAX_BAR;
     if (barLen < 0) barLen = 0;
 
-    Serial.print("Level:");
-    Serial.print(level);
-    Serial.print(" ");
-    Serial.print("|");
-    for (int i = 0; i < barLen; i++) {
-        Serial.print("#");
-    }
-    Serial.println("|");
+    // First, send binary audio frame for Python GUI_WAV_Recorder.py:
+    //   [0xAA][0x55][512 * int16 little-endian samples]
+    Serial.write(0xAA);
+    Serial.write(0x55);
+    Serial.write((uint8_t*)pcm_buffer, sizeof(pcm_buffer));
 
-    delay(100);
+    // Optional: remove debug printing entirely to maximize bandwidth.
+    // If you need Level output again, you can re-enable a throttled print here.
+
+    // No extra delay: let I2S + serial stream continuously.
 }

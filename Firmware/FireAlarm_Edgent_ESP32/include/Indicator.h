@@ -1,8 +1,13 @@
 
 #if defined(BOARD_LED_PIN_WS2812)
   #include <Adafruit_NeoPixel.h>    // Library: https://github.com/adafruit/Adafruit_NeoPixel
-
-  Adafruit_NeoPixel rgb = Adafruit_NeoPixel(1, BOARD_LED_PIN_WS2812, NEO_GRB + NEO_KHZ800);
+ 
+  #ifndef BOARD_NEOPIXEL_COUNT
+  #define BOARD_NEOPIXEL_COUNT 1
+  #endif
+ 
+  // Global NeoPixel strip object used for all visual indication
+  Adafruit_NeoPixel rgb = Adafruit_NeoPixel(BOARD_NEOPIXEL_COUNT, BOARD_LED_PIN_WS2812, NEO_GRB + NEO_KHZ800);
 #endif
 
 void indicator_run();
@@ -40,29 +45,23 @@ public:
   }
 
   uint32_t run() {
-    State currState = BlynkState::get();
-
-    // Reset counter if indicator state changes
-    if (m_PrevState != currState) {
-      m_PrevState = currState;
-      m_Counter = 0;
-    }
-
+    // Keep LED feedback only for reset button actions.
+    // Normal Edgent state changes do not touch the LEDs; user code (e.g. Blynk V1)
+    // controls the strip when the button is not being held.
     const long t = millis();
     if (g_buttonPressed) {
-      if (t - g_buttonPressTime > BUTTON_HOLD_TIME_ACTION)     { return beatLED(COLOR_WHITE,   (int[]){ 100, 100 }); }
-      if (t - g_buttonPressTime > BUTTON_HOLD_TIME_INDICATION) { return waveLED(COLOR_WHITE,   1000); }
+      uint32_t held = t - g_buttonPressTime;
+      if (held > BUTTON_HOLD_TIME_ACTION) {
+        // Strong, but still low-brightness, feedback when config reset will be triggered
+        return beatLED(COLOR_WHITE,   (int[]){ 200, 200 });
+      }
+      if (held > BUTTON_HOLD_TIME_INDICATION) {
+        // Simple slow blink while button is being held
+        return beatLED(COLOR_WHITE,   (int[]){ 400, 400 });
+      }
     }
-    switch (currState) {
-    case MODE_RESET_CONFIG:
-    case MODE_WAIT_CONFIG:       return beatLED(COLOR_BLUE,    (int[]){ 50, 500 });
-    case MODE_CONFIGURING:       return beatLED(COLOR_BLUE,    (int[]){ 200, 200 });
-    case MODE_CONNECTING_NET:    return beatLED(COLOR_BLYNK,   (int[]){ 50, 500 });
-    case MODE_CONNECTING_CLOUD:  return beatLED(COLOR_BLYNK,   (int[]){ 100, 100 });
-    case MODE_RUNNING:           return waveLED(COLOR_BLYNK,   5000);
-    case MODE_OTA_UPGRADE:       return beatLED(COLOR_MAGENTA, (int[]){ 50, 50 });
-    default:                     return beatLED(COLOR_RED,     (int[]){ 80, 100, 80, 1000 } );
-    }
+    // Otherwise, leave LEDs as user code last set them
+    return skipLED();
   }
 
 protected:
@@ -75,11 +74,15 @@ protected:
 
   void initLED() {
     rgb.begin();
+    rgb.setBrightness(BOARD_LED_BRIGHTNESS);  // Limit current as configured
     setRGB(COLOR_BLACK);
   }
 
   void setRGB(uint32_t color) {
-    rgb.setPixelColor(0, color);
+    // Apply the same color to the whole strip
+    for (uint16_t i = 0; i < BOARD_NEOPIXEL_COUNT; i++) {
+      rgb.setPixelColor(i, color);
+    }
     rgb.show();
   }
 

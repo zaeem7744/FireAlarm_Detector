@@ -45,6 +45,7 @@
 #include "BlynkEdgent.h"
 #include <Wire.h>
 #include <Adafruit_SSD1306.h>
+#include <math.h>
 
 #if defined(BOARD_LED_PIN_WS2812)
 #include <Adafruit_NeoPixel.h>
@@ -109,8 +110,44 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 bool displayReady = false;
 bool g_ledOn = false;  // current logical state of the WS2812 strip from Blynk
 
-// Forward declaration
+// LED animation state
+enum LedAnimMode {
+  LED_ANIM_NONE,
+  LED_ANIM_BOOT_RAINBOW,
+  LED_ANIM_BOOT_HEARTBEAT,
+  LED_ANIM_WIFI_DISCONNECTED,
+  LED_ANIM_FIRE_ALERT
+};
+
+struct LedAnimState {
+  LedAnimMode mode;
+  unsigned long startMs;
+  bool active;
+};
+
+LedAnimState g_ledAnim = { LED_ANIM_NONE, 0, false };
+
+enum BootPhase {
+  BOOT_PHASE_RAINBOW,
+  BOOT_PHASE_HEARTBEAT,
+  BOOT_PHASE_DONE
+};
+
+static BootPhase g_bootPhase = BOOT_PHASE_RAINBOW;
+static unsigned long g_bootPhaseStart = 0;
+
+bool g_prevWifiConnected = false;
+bool g_prevAlarmHigh     = false;
+
+// Forward declarations
 void updateOledStatus();
+static void updateLedAnimation();
+static uint32_t colorWheel(uint8_t pos);
+static void fillStripColor(uint8_t r, uint8_t g, uint8_t b);
+static void renderRainbowChase(unsigned long now, uint8_t stepSize);
+static void renderFireChase(unsigned long now);
+static void renderHeartbeat(unsigned long now, uint32_t baseColor);
+static void renderWifiDisconnected(unsigned long now);
 
 void setup()
 {
@@ -128,8 +165,9 @@ void setup()
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 0);
-    display.println("FireAlarm Edgent");
+    // Top row reserved for Wi-Fi icon; title on second row
+    display.setCursor(0, 10);
+    display.println("Fire Alarm Detector");
     display.println("Booting...");
     display.display();
   }
@@ -163,13 +201,11 @@ BLYNK_WRITE(V1)
 #if defined(BOARD_LED_PIN_WS2812)
   int value = param.asInt();
   bool on = (value != 0);
+  // When ON, override animations with fast rainbow; when OFF, turn strip off
   g_ledOn = on;
-
-  uint32_t color = on ? RGB(0xFF, 0xFF, 0xFF) : RGB(0x00, 0x00, 0x00);
-  for (uint16_t i = 0; i < BOARD_NEOPIXEL_COUNT; i++) {
-    rgb.setPixelColor(i, color);
+  if (!on) {
+    fillStripColor(0, 0, 0);
   }
-  rgb.show();
 #endif
 }
 
@@ -181,71 +217,133 @@ void updateOledStatus()
   }
 
   display.clearDisplay();
-  display.setCursor(0, 0);
-  display.println("FireAlarm Edgent");
 
-  // Show basic Blynk / WiFi state info
-  display.print("State: ");
-  switch (BlynkState::get()) {
-    case MODE_WAIT_CONFIG:       display.println("WAIT_CFG");  break;
-    case MODE_CONFIGURING:       display.println("CONFIG");    break;
-    case MODE_CONNECTING_NET:    display.println("NET");       break;
-    case MODE_CONNECTING_CLOUD:  display.println("CLOUD");     break;
-    case MODE_RUNNING:           display.println("RUNNING");   break;
-    case MODE_OTA_UPGRADE:       display.println("OTA");       break;
-    case MODE_SWITCH_TO_STA:     display.println("SWITCH_STA");break;
-    case MODE_RESET_CONFIG:      display.println("RESET_CFG"); break;
-    default:                     display.println("OTHER");     break;
-  }
+  display.clearDisplay();
 
-  display.print("WiFi: ");
+  // ===== Top line: Wi-Fi icon only =====
+  uint8_t bars = 0;
   if (WiFi.status() == WL_CONNECTED) {
-    display.println("OK");
-
-    // Draw a simple RSSI bar graph (0-4 bars) in the top-right corner
     int32_t rssi = WiFi.RSSI();  // dBm
-    uint8_t bars = 0;
     if      (rssi > -55) bars = 4;   // excellent
     else if (rssi > -65) bars = 3;   // good
     else if (rssi > -75) bars = 2;   // fair
     else if (rssi > -85) bars = 1;   // weak
-    else                  bars = 0;   // very poor / unknown
-
-    const int barW  = 3;
-    const int barS  = 1;
-    const int barH1 = 3;
-    const int baseY = 10;           // aligned with first text line
-    const int baseX = 128 - (4 * barW + 3 * barS) - 2;  // a bit inset from right edge
-
-    for (uint8_t i = 0; i < 4; i++) {
-      int x = baseX + i * (barW + barS);
-      int h = barH1 + i * 2;   // increasing height
-      int y = baseY - h;
-      if (i < bars) {
-        display.fillRect(x, y, barW, h, SSD1306_WHITE);
-      } else {
-        display.drawRect(x, y, barW, h, SSD1306_WHITE);
-      }
+    else                  bars = 0;  // very poor
+  }
+  const int barW  = 3;
+  const int barS  = 1;
+  const int barH1 = 3;
+  const int baseY = 8;            // slightly below top border
+  const int baseX = 128 - (4 * barW + 3 * barS) - 2;
+  for (uint8_t i = 0; i < 4; i++) {
+    int x = baseX + i * (barW + barS);
+    int h = barH1 + i * 2;
+    int y = baseY - h;
+    if (i < bars) {
+      display.fillRect(x, y, barW, h, SSD1306_WHITE);
+    } else {
+      display.drawRect(x, y, barW, h, SSD1306_WHITE);
     }
-
-    // We intentionally do not print IP to keep the display clean
-  } else {
-    display.println("DISCONNECTED");
   }
 
-  // Show LED strip logical state from Blynk
-  display.setCursor(0, 48);
-  display.print("LED: ");
-  display.println(g_ledOn ? "ON" : "OFF");
+  // ===== Second line: fixed device title in a box =====
+  display.drawRect(0, 10, 128, 10, SSD1306_WHITE);
+  display.setCursor(2, 12);
+  display.print("Fire Alarm Detector");
 
-  // Show ML confidences (Noise / Alarm) on the next line with full labels
-  float noiseProb = firealarm_get_noise_prob();
+  // ===== Reset / debug overlays =====
+  State currState = BlynkState::get();
+  unsigned long nowMs = millis();
+  if (g_buttonPressed) {
+    uint32_t held = nowMs - g_buttonPressTime;
+    display.setCursor(0, 24);
+    if (held > BUTTON_HOLD_TIME_ACTION) {
+      display.println("Resetting Wi-Fi Settings");
+      // Simple progress bar under the title
+      uint8_t progress = (held / 200) % 12; // up to full width
+      int barX = 0;
+      int barY = 36;
+      int blockW = 8;
+      for (uint8_t i = 0; i < 12; i++) {
+        int x = barX + i * (blockW + 1);
+        if (i <= progress) {
+          display.fillRect(x, barY, blockW, 4, SSD1306_WHITE);
+        } else {
+          display.drawRect(x, barY, blockW, 4, SSD1306_WHITE);
+        }
+      }
+    } else if (held > BUTTON_HOLD_TIME_INDICATION) {
+      display.println("Hold to reset Wi-Fi");
+      int dots = (held / 400) % 4;
+      display.print("Confirming");
+      for (int i = 0; i < dots; i++) display.print(".");
+    } else {
+      display.println("Press & hold to reset Wi-Fi");
+    }
+    display.display();
+    return;
+  }
+
+  if (currState == MODE_RESET_CONFIG) {
+    display.setCursor(0, 24);
+    display.println("Resetting Wi-Fi Settings");
+    display.setCursor(0, 34);
+    display.println("Please wait...");
+    display.display();
+    return;
+  }
+
+  if (currState == MODE_WAIT_CONFIG) {
+    // Device is in configuration (AP) mode after a reset
+    display.setCursor(0, 24);
+    display.println("Setup mode");
+    display.setCursor(0, 34);
+    display.println("Connect phone to");
+    display.setCursor(0, 44);
+    display.println("Blynk Wi-Fi app");
+    display.display();
+    return;
+  }
+
+  // ===== Normal monitoring UI =====
+
+  // System state row
+  display.setCursor(0, 24);
+  display.print("System: ");
   float alarmProb = firealarm_get_alarm_prob();
-  display.setCursor(0, 56);
-  display.print("Noise: ");
-  display.print(noiseProb, 2);
-  display.print("  Alarm: ");
-  display.print(alarmProb, 2);
+  const float ALERT_VISUAL_THRESHOLD = 0.7f;
+  if (alarmProb >= ALERT_VISUAL_THRESHOLD) {
+    display.println("ALERT");
+  } else if (currState == MODE_RUNNING && WiFi.status() == WL_CONNECTED) {
+    display.println("Monitoring");
+  } else if (WiFi.status() != WL_CONNECTED) {
+    display.println("Idle (No Wi-Fi)");
+  } else {
+    display.println("Starting...");
+  }
+
+  // Wi-Fi status text (shifted down to avoid overlap)
+  display.setCursor(0, 32);
+  display.print("Wi-Fi: ");
+  if (WiFi.status() == WL_CONNECTED) {
+    display.println("Connected");
+  } else {
+    display.println("Disconnected");
+  }
+
+  // Alarm and background sound percentages (compact)
+  float noiseProb = firealarm_get_noise_prob();
+  display.setCursor(0, 44);
+  display.print("Alarm:");
+  int alarmPercent = (int)(alarmProb * 100.0f + 0.5f);
+  display.print(alarmPercent);
+  display.print("%");
+
+  display.setCursor(64, 44);
+  int noisePercent = (int)(noiseProb * 100.0f + 0.5f);
+  display.print("Bg:");
+  display.print(noisePercent);
+  display.print("%");
 
   display.display();
 }
@@ -254,6 +352,188 @@ void loop() {
   BlynkEdgent.run();
   // Run one step of the Edge Impulse fire alarm inference inside Edgent loop
   firealarm_inference_step();
+  // Update LED animations without blocking main logic
+  updateLedAnimation();
+}
+
+// ===== LED animation helpers =====
+
+static uint32_t colorWheel(uint8_t pos) {
+  if (pos < 85) {
+    return rgb.Color(pos * 3, 255 - pos * 3, 0);
+  } else if (pos < 170) {
+    pos -= 85;
+    return rgb.Color(255 - pos * 3, 0, pos * 3);
+  } else {
+    pos -= 170;
+    return rgb.Color(0, pos * 3, 255 - pos * 3);
+  }
+}
+
+static void fillStripColor(uint8_t r, uint8_t g, uint8_t b) {
+#if defined(BOARD_LED_PIN_WS2812)
+  for (uint16_t i = 0; i < BOARD_NEOPIXEL_COUNT; i++) {
+    rgb.setPixelColor(i, rgb.Color(r, g, b));
+  }
+  rgb.show();
+#endif
+}
+
+static void renderRainbowChase(unsigned long now, uint8_t stepSize) {
+#if defined(BOARD_LED_PIN_WS2812)
+  static uint16_t offset = 0;
+  static unsigned long lastStep = 0;
+  const unsigned long stepMs = 16;   // ~60 FPS for very smooth motion
+  if (now - lastStep < stepMs) return;
+  lastStep = now;
+
+  uint16_t count = BOARD_NEOPIXEL_COUNT;
+  for (uint16_t i = 0; i < count; i++) {
+    uint8_t phase = (uint8_t)(((i + offset) * 256) / count);
+    rgb.setPixelColor(i, colorWheel(phase));
+  }
+  rgb.show();
+  offset = (offset + stepSize) % count;
+#endif
+}
+
+static void renderFireChase(unsigned long now) {
+#if defined(BOARD_LED_PIN_WS2812)
+  static uint16_t head = 0;
+  static unsigned long lastStep = 0;
+  const unsigned long stepMs = 40;
+  const uint8_t trail = 4;
+  if (now - lastStep < stepMs) return;
+  lastStep = now;
+
+  uint16_t count = BOARD_NEOPIXEL_COUNT;
+  for (uint16_t i = 0; i < count; i++) rgb.setPixelColor(i, 0);
+  for (uint8_t t = 0; t < trail; t++) {
+    uint16_t idx = (head + t) % count;
+    rgb.setPixelColor(idx, rgb.Color(255, 0, 0));
+  }
+  rgb.show();
+  head = (head + 1) % count;
+#endif
+}
+
+static void renderHeartbeat(unsigned long now, uint32_t baseColor, uint16_t periodMs) {
+#if defined(BOARD_LED_PIN_WS2812)
+  static unsigned long start = 0;
+  if (start == 0) start = now;
+  unsigned long t = (now - start) % periodMs;
+  float phase = (float)t / (float)periodMs;
+  float b = 0.3f + 0.7f * (0.5f - 0.5f * cosf(phase * 2.0f * PI)); // 0.3..1.0
+
+  uint8_t r = (uint8_t)(((baseColor >> 16) & 0xFF) * b);
+  uint8_t g = (uint8_t)(((baseColor >> 8)  & 0xFF) * b);
+  uint8_t bl= (uint8_t)(( baseColor        & 0xFF) * b);
+
+  fillStripColor(r, g, bl);
+#endif
+}
+
+static void renderWifiDisconnected(unsigned long now) {
+#if defined(BOARD_LED_PIN_WS2812)
+  static unsigned long lastStep = 0;
+  static bool on = false;
+  const unsigned long stepMs = 300;
+  if (now - lastStep < stepMs) return;
+  lastStep = now;
+  on = !on;
+  if (on) fillStripColor(0, 0, 32);
+  else    fillStripColor(0, 0, 0);
+#endif
+}
+
+static void updateLedAnimation() {
+#if defined(BOARD_LED_PIN_WS2812)
+  unsigned long now = millis();
+  bool wifiConnected = (WiFi.status() == WL_CONNECTED);
+  float alarmProb    = firealarm_get_alarm_prob();
+  bool alarmHigh     = (alarmProb >= ALARM_THRESHOLD);
+
+  // Manual override from Blynk LED button: fast rainbow until turned off
+  if (g_ledOn) {
+    renderRainbowChase(now, 4);  // fast but smooth rainbow
+    g_prevWifiConnected = wifiConnected;
+    g_prevAlarmHigh     = alarmHigh;
+    return;
+  }
+
+  // Boot phases: first fast rainbow, then heartbeat, then done
+  if (g_bootPhase != BOOT_PHASE_DONE && !alarmHigh) {
+    if (g_bootPhaseStart == 0) g_bootPhaseStart = now;
+    unsigned long elapsedBoot = now - g_bootPhaseStart;
+    if (g_bootPhase == BOOT_PHASE_RAINBOW) {
+      renderRainbowChase(now, 3); // smooth rainbow for 5s
+      if (elapsedBoot > 5000UL) {
+        g_bootPhase = BOOT_PHASE_HEARTBEAT;
+        g_bootPhaseStart = now;
+      }
+      g_prevWifiConnected = wifiConnected;
+      g_prevAlarmHigh     = alarmHigh;
+      return;
+    } else if (g_bootPhase == BOOT_PHASE_HEARTBEAT) {
+      // 20s heartbeat: teal if Wi-Fi, blue if not (faster when no Wi-Fi)
+      uint32_t color = wifiConnected ? rgb.Color(0x2E, 0xFF, 0xB9)
+                                     : rgb.Color(0, 0, 80);
+      uint16_t periodMs = wifiConnected ? 600 : 400;   // smoother, faster heartbeat
+      renderHeartbeat(now, color, periodMs);
+      if (elapsedBoot > 20000UL) {
+        g_bootPhase = BOOT_PHASE_DONE;
+        fillStripColor(0, 0, 0);  // turn off after boot effects
+      }
+      g_prevWifiConnected = wifiConnected;
+      g_prevAlarmHigh     = alarmHigh;
+      return;
+    }
+  }
+
+  // After boot phase, handle events
+  // Fire alert has highest priority: 10s red heartbeat
+  if (alarmHigh && !g_prevAlarmHigh) {
+    g_ledAnim.mode    = LED_ANIM_FIRE_ALERT;
+    g_ledAnim.startMs = now;
+    g_ledAnim.active  = true;
+  }
+
+  // Wi-Fi disconnected: 30s blue heartbeat
+  if (!wifiConnected && g_prevWifiConnected && !alarmHigh) {
+    g_ledAnim.mode    = LED_ANIM_WIFI_DISCONNECTED;
+    g_ledAnim.startMs = now;
+    g_ledAnim.active  = true;
+  }
+
+  // Render current animation frame based on active mode
+  if (g_ledAnim.active) {
+    unsigned long elapsed = now - g_ledAnim.startMs;
+    switch (g_ledAnim.mode) {
+      case LED_ANIM_FIRE_ALERT:
+        renderHeartbeat(now, rgb.Color(255, 0, 0), 250); // very fast red heartbeat
+        if (elapsed > 10000UL) {
+          g_ledAnim.active = false;
+          fillStripColor(0, 0, 0);
+        }
+        break;
+      case LED_ANIM_WIFI_DISCONNECTED:
+        renderHeartbeat(now, rgb.Color(0, 0, 80), 400);  // blue heartbeat, fast and smooth
+        if (elapsed > 30000UL) {
+          g_ledAnim.active = false;
+          fillStripColor(0, 0, 0);
+        }
+        break;
+      default:
+        break;
+    }
+  } else {
+    // No active animation: LEDs off to save power
+    fillStripColor(0, 0, 0);
+  }
+
+  g_prevWifiConnected = wifiConnected;
+  g_prevAlarmHigh     = alarmHigh;
+#endif
 }
 
 // ===== Edge Impulse fire alarm inference implementation (from ei_main.cpp) =====

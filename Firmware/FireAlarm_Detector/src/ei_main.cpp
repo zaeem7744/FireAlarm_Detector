@@ -28,9 +28,8 @@ static bool record_status = true;
 
 // Buzzer configuration
 static const int BUZZER_PIN = 8;           // GPIO8 on ESP32-S3 Super Mini
-static const float ALARM_THRESHOLD = 0.8f; // alarm_on_1 probability threshold
-static const int ALARM_REQUIRED_HITS = 2;  // require 2 consecutive detections above threshold
-static int alarm_consecutive_hits = 0;
+// Trigger when Alarm confidence >= 70%
+static const float ALARM_THRESHOLD = 0.7f;
 static unsigned long alarm_start_ms = 0;   // when current alarm burst started
 
 // Forward declarations
@@ -102,36 +101,28 @@ void loop()
     if (++print_results >= (EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW)) {
         print_results = 0;
 
-        // --- Buzzer control based on "alarm on 1" probability ---
+        // --- Buzzer control based on Alarm* classes (e.g. "Alarm 0", "Alarm 1") ---
         float alarm_prob = 0.0f;
         for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
-            if (strcmp(result.classification[ix].label, "alarm on 1") == 0) {
-                alarm_prob = result.classification[ix].value;
-                break;
+            const char *label = result.classification[ix].label;
+            if (label && strncmp(label, "Alarm", 5) == 0) {
+                if (result.classification[ix].value > alarm_prob) {
+                    alarm_prob = result.classification[ix].value;
+                }
             }
         }
 
-        if (alarm_prob >= ALARM_THRESHOLD) {
-            // Only count hits while we're not in an active burst
-            if (alarm_start_ms == 0) {
-                alarm_consecutive_hits++;
-            }
-        } else {
-            // Reset hits only when not already in a burst
-            if (alarm_start_ms == 0) {
-                alarm_consecutive_hits = 0;
-            }
+        // Single-interval trigger: if Alarm >= threshold and no active burst, start one
+        bool should_start_alarm = false;
+        if (alarm_prob >= ALARM_THRESHOLD && alarm_start_ms == 0) {
+            should_start_alarm = true;
         }
-
-        bool alarm_active = (alarm_consecutive_hits >= ALARM_REQUIRED_HITS);
 
         unsigned long now_ms = millis();
 
-        if (alarm_active && alarm_start_ms == 0) {
+        if (should_start_alarm) {
             // Start a new 5s buzzer burst
             alarm_start_ms = now_ms;
-            // Reset counter so we require 4 new hits for the *next* burst
-            alarm_consecutive_hits = 0;
         }
 
         // During an active burst, keep fast beeping for 5 seconds regardless of

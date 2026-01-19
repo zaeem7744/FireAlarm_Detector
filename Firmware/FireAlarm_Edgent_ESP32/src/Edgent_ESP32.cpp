@@ -116,7 +116,8 @@ enum LedAnimMode {
   LED_ANIM_BOOT_RAINBOW,
   LED_ANIM_BOOT_HEARTBEAT,
   LED_ANIM_WIFI_DISCONNECTED,
-  LED_ANIM_FIRE_ALERT
+  LED_ANIM_FIRE_ALERT,
+  LED_ANIM_WIFI_CONNECTED_OK   // solid light blue for 10s when Wi-Fi connects
 };
 
 struct LedAnimState {
@@ -126,6 +127,10 @@ struct LedAnimState {
 };
 
 LedAnimState g_ledAnim = { LED_ANIM_NONE, 0, false };
+static unsigned long g_ledAnimDurationMs = 0;     // duration for current g_ledAnim.mode
+static bool         g_initialStatusShown = false; // one-time status after rainbow
+static bool         g_ledAnimBlink       = false; // whether current Wi-Fi anim should blink
+static unsigned long g_ledAnimBlinkStepMs = 0;    // blink speed for Wi-Fi anim
 
 enum BootPhase {
   BOOT_PHASE_RAINBOW,
@@ -133,21 +138,24 @@ enum BootPhase {
   BOOT_PHASE_DONE
 };
 
-static BootPhase g_bootPhase = BOOT_PHASE_RAINBOW;
+static BootPhase g_bootPhase = BOOT_PHASE_DONE;  // Boot rainbow handled blocking in setup()
 static unsigned long g_bootPhaseStart = 0;
 
 bool g_prevWifiConnected = false;
 bool g_prevAlarmHigh     = false;
+State g_prevBlynkState   = MODE_MAX_VALUE;  // track state transitions for LED timings
 
 // Forward declarations
 void updateOledStatus();
 static void updateLedAnimation();
+void ledAnimationLoop();
 static uint32_t colorWheel(uint8_t pos);
 static void fillStripColor(uint8_t r, uint8_t g, uint8_t b);
 static void renderRainbowChase(unsigned long now, uint8_t stepSize);
 static void renderFireChase(unsigned long now);
-static void renderHeartbeat(unsigned long now, uint32_t baseColor);
+static void renderHeartbeat(unsigned long now, uint32_t baseColor, uint16_t periodMs);
 static void renderWifiDisconnected(unsigned long now);
+static void renderFastBlink(unsigned long now, uint8_t r, uint8_t g, uint8_t b, unsigned long stepMs);
 
 void setup()
 {
@@ -177,17 +185,32 @@ void setup()
   // Initialize Edge Impulse-based fire alarm inference
   firealarm_inference_init();
 
+  // Mark boot phase as rainbow; handled fully here in setup()
+  g_bootPhase = BOOT_PHASE_RAINBOW;
+
 #if defined(BOARD_LED_PIN_WS2812)
-  // Simple boot test pattern on WS2812 strip to verify wiring (very dim to save power)
+  // Guaranteed rainbow boot animation (~6s), independent of Blynk/Wi-Fi state
+  rgb.begin();
+  rgb.setBrightness(BOARD_LED_BRIGHTNESS);
+  unsigned long rbStart = millis();
+  uint16_t offset = 0;
+  while (millis() - rbStart < 6000UL) {
+    uint16_t count = BOARD_NEOPIXEL_COUNT;
+    for (uint16_t i = 0; i < count; i++) {
+      uint8_t phase = (uint8_t)(((i + offset) * 256) / count);
+      rgb.setPixelColor(i, colorWheel(phase));
+    }
+    rgb.show();
+    offset++;
+    delay(40);  // slower motion, ~25 FPS
+  }
+  // Clear after rainbow; runtime animations take over in loop()
   for (uint16_t i = 0; i < BOARD_NEOPIXEL_COUNT; i++) {
-    rgb.setPixelColor(i, RGB(0x05, 0x00, 0x00)); // very dim red across whole strip
+    rgb.setPixelColor(i, 0);
   }
   rgb.show();
-  delay(300);
-  for (uint16_t i = 0; i < BOARD_NEOPIXEL_COUNT; i++) {
-    rgb.setPixelColor(i, RGB(0x00, 0x00, 0x00)); // off
-  }
-  rgb.show();
+  // After blocking boot rainbow, mark boot phase done so loop() logic never re-runs it
+  g_bootPhase = BOOT_PHASE_DONE;
 #endif
 
   // Periodic OLED status update
@@ -259,10 +282,11 @@ void updateOledStatus()
     display.setCursor(0, 24);
     if (held > BUTTON_HOLD_TIME_ACTION) {
       display.println("Resetting Wi-Fi Settings");
-      // Simple progress bar under the title
+      // Move progress bar to next line to avoid overlapping text
+      display.setCursor(0, 34);
       uint8_t progress = (held / 200) % 12; // up to full width
       int barX = 0;
-      int barY = 36;
+      int barY = 44;
       int blockW = 8;
       for (uint8_t i = 0; i < 12; i++) {
         int x = barX + i * (blockW + 1);
@@ -352,8 +376,7 @@ void loop() {
   BlynkEdgent.run();
   // Run one step of the Edge Impulse fire alarm inference inside Edgent loop
   firealarm_inference_step();
-  // Update LED animations without blocking main logic
-  updateLedAnimation();
+  // LED animations are driven from app_loop() to work in all Blynk states
 }
 
 // ===== LED animation helpers =====
@@ -383,7 +406,7 @@ static void renderRainbowChase(unsigned long now, uint8_t stepSize) {
 #if defined(BOARD_LED_PIN_WS2812)
   static uint16_t offset = 0;
   static unsigned long lastStep = 0;
-  const unsigned long stepMs = 16;   // ~60 FPS for very smooth motion
+  const unsigned long stepMs = 10;   // faster updates for snappier motion (~100 FPS)
   if (now - lastStep < stepMs) return;
   lastStep = now;
 
@@ -401,7 +424,7 @@ static void renderFireChase(unsigned long now) {
 #if defined(BOARD_LED_PIN_WS2812)
   static uint16_t head = 0;
   static unsigned long lastStep = 0;
-  const unsigned long stepMs = 40;
+  const unsigned long stepMs = 20;   // faster fire chase
   const uint8_t trail = 4;
   if (now - lastStep < stepMs) return;
   lastStep = now;
@@ -437,11 +460,23 @@ static void renderWifiDisconnected(unsigned long now) {
 #if defined(BOARD_LED_PIN_WS2812)
   static unsigned long lastStep = 0;
   static bool on = false;
-  const unsigned long stepMs = 300;
+  const unsigned long stepMs = 150;  // faster blink
   if (now - lastStep < stepMs) return;
   lastStep = now;
   on = !on;
   if (on) fillStripColor(0, 0, 32);
+  else    fillStripColor(0, 0, 0);
+#endif
+}
+
+static void renderFastBlink(unsigned long now, uint8_t r, uint8_t g, uint8_t b, unsigned long stepMs) {
+#if defined(BOARD_LED_PIN_WS2812)
+  static unsigned long lastStep = 0;
+  static bool on = false;
+  if (now - lastStep < stepMs) return;
+  lastStep = now;
+  on = !on;
+  if (on) fillStripColor(r, g, b);
   else    fillStripColor(0, 0, 0);
 #endif
 }
@@ -452,6 +487,8 @@ static void updateLedAnimation() {
   bool wifiConnected = (WiFi.status() == WL_CONNECTED);
   float alarmProb    = firealarm_get_alarm_prob();
   bool alarmHigh     = (alarmProb >= ALARM_THRESHOLD);
+  State currState    = BlynkState::get();
+  State prevState    = g_prevBlynkState;
 
   // Manual override from Blynk LED button: fast rainbow until turned off
   if (g_ledOn) {
@@ -461,36 +498,42 @@ static void updateLedAnimation() {
     return;
   }
 
-  // Boot phases: first fast rainbow, then heartbeat, then done
-  if (g_bootPhase != BOOT_PHASE_DONE && !alarmHigh) {
-    if (g_bootPhaseStart == 0) g_bootPhaseStart = now;
-    unsigned long elapsedBoot = now - g_bootPhaseStart;
-    if (g_bootPhase == BOOT_PHASE_RAINBOW) {
-      renderRainbowChase(now, 3); // smooth rainbow for 5s
-      if (elapsedBoot > 5000UL) {
-        g_bootPhase = BOOT_PHASE_HEARTBEAT;
-        g_bootPhaseStart = now;
-      }
-      g_prevWifiConnected = wifiConnected;
-      g_prevAlarmHigh     = alarmHigh;
-      return;
-    } else if (g_bootPhase == BOOT_PHASE_HEARTBEAT) {
-      // 20s heartbeat: teal if Wi-Fi, blue if not (faster when no Wi-Fi)
-      uint32_t color = wifiConnected ? rgb.Color(0x2E, 0xFF, 0xB9)
-                                     : rgb.Color(0, 0, 80);
-      uint16_t periodMs = wifiConnected ? 600 : 400;   // smoother, faster heartbeat
-      renderHeartbeat(now, color, periodMs);
-      if (elapsedBoot > 20000UL) {
-        g_bootPhase = BOOT_PHASE_DONE;
-        fillStripColor(0, 0, 0);  // turn off after boot effects
-      }
-      g_prevWifiConnected = wifiConnected;
-      g_prevAlarmHigh     = alarmHigh;
-      return;
-    }
+  // Note: boot rainbow is handled fully in setup() as a blocking animation.
+  // In the main loop we only handle status/alert animations.
+
+  // State-driven LED animations based on Blynk state transitions
+
+  // 1) Power-on with no Wi-Fi configured: initial entry into MODE_WAIT_CONFIG -> blue blink 10s
+  if (prevState == MODE_MAX_VALUE && currState == MODE_WAIT_CONFIG && !alarmHigh) {
+    g_ledAnim.mode        = LED_ANIM_WIFI_DISCONNECTED;
+    g_ledAnim.startMs     = now;
+    g_ledAnimDurationMs   = 10000UL;  // 10 seconds
+    g_ledAnimBlink        = true;
+    g_ledAnimBlinkStepMs  = 500;      // 500ms on/off
+    g_ledAnim.active      = true;
   }
 
-  // After boot phase, handle events
+  // 2) Explicit Wi-Fi reset: entering MODE_RESET_CONFIG -> blue blink 2s
+  if (currState == MODE_RESET_CONFIG && prevState != MODE_RESET_CONFIG && !alarmHigh) {
+    g_ledAnim.mode        = LED_ANIM_WIFI_DISCONNECTED;
+    g_ledAnim.startMs     = now;
+    g_ledAnimDurationMs   = 2000UL;   // 2 seconds
+    g_ledAnimBlink        = true;
+    g_ledAnimBlinkStepMs  = 500;      // 500ms on/off
+    g_ledAnim.active      = true;
+  }
+
+  // 3) Successful connection to Blynk cloud: transition into MODE_RUNNING with Wi-Fi
+  if (prevState != MODE_RUNNING && currState == MODE_RUNNING && wifiConnected && !alarmHigh) {
+    g_ledAnim.mode        = LED_ANIM_WIFI_CONNECTED_OK;
+    g_ledAnim.startMs     = now;
+    g_ledAnimDurationMs   = 5000UL;   // 5 seconds
+    g_ledAnimBlink        = true;
+    g_ledAnimBlinkStepMs  = 500;      // 500ms on/off
+    g_ledAnim.active      = true;
+  }
+
+  // After state-driven events, handle alerts
   // Fire alert has highest priority: 10s red heartbeat
   if (alarmHigh && !g_prevAlarmHigh) {
     g_ledAnim.mode    = LED_ANIM_FIRE_ALERT;
@@ -498,11 +541,14 @@ static void updateLedAnimation() {
     g_ledAnim.active  = true;
   }
 
-  // Wi-Fi disconnected: 30s blue heartbeat
+  // Wi-Fi disconnected after running: fast blue blink for 5s
   if (!wifiConnected && g_prevWifiConnected && !alarmHigh) {
-    g_ledAnim.mode    = LED_ANIM_WIFI_DISCONNECTED;
-    g_ledAnim.startMs = now;
-    g_ledAnim.active  = true;
+    g_ledAnim.mode          = LED_ANIM_WIFI_DISCONNECTED;
+    g_ledAnim.startMs       = now;
+    g_ledAnimDurationMs     = 5000UL;   // 5 seconds
+    g_ledAnimBlink          = true;     // blink
+    g_ledAnimBlinkStepMs    = 500;      // 500ms on/off for disconnect
+    g_ledAnim.active        = true;
   }
 
   // Render current animation frame based on active mode
@@ -510,15 +556,32 @@ static void updateLedAnimation() {
     unsigned long elapsed = now - g_ledAnim.startMs;
     switch (g_ledAnim.mode) {
       case LED_ANIM_FIRE_ALERT:
-        renderHeartbeat(now, rgb.Color(255, 0, 0), 250); // very fast red heartbeat
+        // Red blinking for 10 seconds at 500 ms on/off
+        renderFastBlink(now, 255, 0, 0, 500);
         if (elapsed > 10000UL) {
           g_ledAnim.active = false;
           fillStripColor(0, 0, 0);
         }
         break;
       case LED_ANIM_WIFI_DISCONNECTED:
-        renderHeartbeat(now, rgb.Color(0, 0, 80), 400);  // blue heartbeat, fast and smooth
-        if (elapsed > 30000UL) {
+        // Wi-Fi not connected: either solid or blinking blue based on g_ledAnimBlink
+        if (g_ledAnimBlink) {
+          // Blink blue (used for mid-session disconnect)
+          unsigned long stepMs = (g_ledAnimBlinkStepMs > 0) ? g_ledAnimBlinkStepMs : 200;
+          renderFastBlink(now, 0, 0, 80, stepMs);
+        } else {
+          // Solid blue (used for startup when Wi-Fi is not connected)
+          fillStripColor(0, 0, 80);
+        }
+        if (elapsed > g_ledAnimDurationMs) {
+          g_ledAnim.active = false;
+          fillStripColor(0, 0, 0);
+        }
+        break;
+      case LED_ANIM_WIFI_CONNECTED_OK:
+        // Light blue on/off pattern when Wi-Fi connects (duration set by g_ledAnimDurationMs)
+        renderFastBlink(now, 0x2E, 0xFF, 0xB9, g_ledAnimBlinkStepMs > 0 ? g_ledAnimBlinkStepMs : 500);
+        if (elapsed > g_ledAnimDurationMs) {
           g_ledAnim.active = false;
           fillStripColor(0, 0, 0);
         }
@@ -527,13 +590,19 @@ static void updateLedAnimation() {
         break;
     }
   } else {
-    // No active animation: LEDs off to save power
+    // No active animation: idle LEDs off
     fillStripColor(0, 0, 0);
   }
 
   g_prevWifiConnected = wifiConnected;
   g_prevAlarmHigh     = alarmHigh;
+g_prevBlynkState    = currState;
 #endif
+}
+
+// Exposed to BlynkEdgent app_loop() so LED animations run during config/connect loops
+void ledAnimationLoop() {
+  updateLedAnimation();
 }
 
 // ===== Edge Impulse fire alarm inference implementation (from ei_main.cpp) =====

@@ -24,6 +24,8 @@ extern "C" {
 
 BlynkTimer edgentTimer;
 
+void ledAnimationLoop();  // implemented in main firmware file
+
 #include "SysUtils.h"
 #include "BlynkState.h"
 #include "ConfigStore.h"
@@ -135,5 +137,6 @@ public:
 void app_loop() {
     edgentTimer.run();
     edgentConsole.run();
+    ledAnimationLoop();  // also drive LED animations from here so they run in all states
 }
 

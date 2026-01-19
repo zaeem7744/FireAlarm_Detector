@@ -41,6 +41,7 @@ public:
 
   void init() {
     m_Counter = 0;
+    m_PrevButtonPressed = false;
     initLED();
   }
 
@@ -49,17 +50,30 @@ public:
     // Normal Edgent state changes do not touch the LEDs; user code (e.g. Blynk V1)
     // controls the strip when the button is not being held.
     const long t = millis();
-    if (g_buttonPressed) {
+    bool buttonNow = g_buttonPressed;
+
+    if (buttonNow) {
       uint32_t held = t - g_buttonPressTime;
       if (held > BUTTON_HOLD_TIME_ACTION) {
         // Strong, but still low-brightness, feedback when config reset will be triggered
+        m_PrevButtonPressed = true;
         return beatLED(COLOR_WHITE,   (int[]){ 200, 200 });
       }
       if (held > BUTTON_HOLD_TIME_INDICATION) {
         // Simple slow blink while button is being held
+        m_PrevButtonPressed = true;
         return beatLED(COLOR_WHITE,   (int[]){ 400, 400 });
       }
+      // Button just pressed but not held long enough yet; remember state
+      m_PrevButtonPressed = true;
+    } else {
+      // Button is not pressed now. If it was pressed before, clear the indicator once.
+      if (m_PrevButtonPressed) {
+        setRGB(COLOR_BLACK);
+      }
+      m_PrevButtonPressed = false;
     }
+
     // Otherwise, leave LEDs as user code last set them
     return skipLED();
   }
@@ -200,6 +214,7 @@ protected:
 private:
   uint8_t m_Counter;
   State   m_PrevState;
+  bool    m_PrevButtonPressed;
 };
 
 Indicator indicator;

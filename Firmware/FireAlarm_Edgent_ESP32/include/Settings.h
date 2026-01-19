@@ -100,7 +100,7 @@
 #define BOARD_PWM_MAX                 1023
 
 #if !defined(CONFIG_DEVICE_PREFIX)
-#define CONFIG_DEVICE_PREFIX          "Blynk"
+#define CONFIG_DEVICE_PREFIX          "FireAlarm Detector"
 #endif
 #if !defined(CONFIG_AP_URL)
 #define CONFIG_AP_URL                 "blynk.setup"

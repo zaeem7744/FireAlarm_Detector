@@ -21,11 +21,11 @@
 
 /* Fill in information from your Blynk Template here */
 /* Read more: https://bit.ly/BlynkInject */
-#define BLYNK_TEMPLATE_ID           "TMPL4DMsnssOc"
-#define BLYNK_TEMPLATE_NAME         "FireAlarm Detector Dashboard"
+#define BLYNK_TEMPLATE_ID           "TMPL57DWEadZ9"
+#define BLYNK_TEMPLATE_NAME         "We Are Laika Fire Safety System"
 // NOTE: With Blynk.Edgent, the Auth Token is provisioned dynamically from the app,
 // so BLYNK_AUTH_TOKEN must NOT be defined as a macro here.
- 
+
 #define BLYNK_FIRMWARE_VERSION        "0.1.0"
  
 #define BLYNK_PRINT Serial
@@ -79,6 +79,14 @@ static const int BUZZER_PIN = 8;           // GPIO8 on ESP32-S3 Super Mini
 // Trigger when Alarm confidence >= 70%
 static const float ALARM_THRESHOLD = 0.7f;
 static unsigned long alarm_start_ms = 0;   // when current alarm burst started
+
+// Physical Fire Alarm status LED (separate from WS2812 strip)
+static const int FIRE_STATUS_LED_PIN = 11; // GPIO11 on ESP32-S3 Super Mini
+
+// Fire status LED control
+static bool g_fireLedManual   = false;     // manual control from Blynk V0
+static bool g_fireLedOverride = false;     // true while alarm override is active
+static unsigned long g_fireLedOverrideEnd = 0; // when override should end
 
 // Latest probabilities for external use (OLED, etc.)
 static float g_noise_prob_ml = 0.0f;
@@ -149,6 +157,7 @@ State g_prevBlynkState   = MODE_MAX_VALUE;  // track state transitions for LED t
 void updateOledStatus();
 static void updateLedAnimation();
 void ledAnimationLoop();
+void sendWifiStrength();
 static uint32_t colorWheel(uint8_t pos);
 static void fillStripColor(uint8_t r, uint8_t g, uint8_t b);
 static void renderRainbowChase(unsigned long now, uint8_t stepSize);
@@ -185,6 +194,10 @@ void setup()
   // Initialize Edge Impulse-based fire alarm inference
   firealarm_inference_init();
 
+  // Configure physical fire status LED
+  pinMode(FIRE_STATUS_LED_PIN, OUTPUT);
+  digitalWrite(FIRE_STATUS_LED_PIN, LOW);
+
   // Mark boot phase as rainbow; handled fully here in setup()
   g_bootPhase = BOOT_PHASE_RAINBOW;
 
@@ -216,6 +229,8 @@ void setup()
   // Periodic OLED status update
   extern BlynkTimer edgentTimer;
   edgentTimer.setInterval(1000L, updateOledStatus);
+  // Periodic Wi-Fi strength update to Blynk
+  edgentTimer.setInterval(5000L, sendWifiStrength);
 }
 
 // Blynk virtual pin V1: control the whole WS2812 strip
@@ -230,6 +245,13 @@ BLYNK_WRITE(V1)
     fillStripColor(0, 0, 0);
   }
 #endif
+}
+
+// Blynk virtual pin V0: manual control of physical Fire status LED
+BLYNK_WRITE(V0)
+{
+  int value = param.asInt();
+  g_fireLedManual = (value != 0);
 }
 
 void updateOledStatus()
@@ -371,6 +393,23 @@ void updateOledStatus()
 
   display.display();
 }
+
+// Periodically send Wi-Fi signal strength (0-100%) to Blynk V2
+void sendWifiStrength()
+{
+  int pct = 0;
+  if (WiFi.status() == WL_CONNECTED) {
+    long rssi = WiFi.RSSI();  // dBm, usually -30 .. -90
+    if      (rssi <= -90) pct = 0;
+    else if (rssi >= -50) pct = 100;
+    else {
+      pct = (int)((rssi + 90) * 2.5f);  // -90 -> 0, -50 -> 100
+    }
+  } else {
+    pct = 0;
+  }
+  Blynk.virtualWrite(V2, pct);
+}
  
 void loop() {
   BlynkEdgent.run();
@@ -380,6 +419,24 @@ void loop() {
 }
 
 // ===== LED animation helpers =====
+
+static void updateFireStatusLed(unsigned long now_ms) {
+  // Handle end of override window
+  if (g_fireLedOverride && now_ms >= g_fireLedOverrideEnd) {
+    g_fireLedOverride = false;
+  }
+
+  bool ledOn = false;
+  if (g_fireLedOverride) {
+    // During alarm override, force LED ON
+    ledOn = true;
+  } else {
+    // Otherwise, manual control from Blynk V0
+    ledOn = g_fireLedManual;
+  }
+
+  digitalWrite(FIRE_STATUS_LED_PIN, ledOn ? HIGH : LOW);
+}
 
 static uint32_t colorWheel(uint8_t pos) {
   if (pos < 85) {
@@ -603,6 +660,7 @@ g_prevBlynkState    = currState;
 // Exposed to BlynkEdgent app_loop() so LED animations run during config/connect loops
 void ledAnimationLoop() {
   updateLedAnimation();
+  updateFireStatusLed(millis());
 }
 
 // ===== Edge Impulse fire alarm inference implementation (from ei_main.cpp) =====
@@ -685,6 +743,17 @@ static void firealarm_inference_step()
         if (should_start_alarm) {
             // Start a new 5s buzzer burst
             alarm_start_ms = now_ms;
+
+            // Enable Fire status LED override for 10 seconds
+            g_fireLedOverride    = true;
+            g_fireLedOverrideEnd = now_ms + 10000UL;
+
+            // Notify Blynk IoT (push/email + event history) about detected fire alarm
+            // Event code must match what you configured in Blynk Console
+            if (Blynk.connected()) {
+                String msg = String("Fire alarm detected, confidence ") + String(alarm_prob * 100.0f, 0) + "%";
+                Blynk.logEvent("fire_alarm_detected", msg);
+            }
         }
 
         // During an active burst, keep fast beeping for 5 seconds regardless of

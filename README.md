@@ -1,4 +1,4 @@
-# ðŸ”¥ Fire Alarm Detection & Alert System â€” ESP32 + AI/ML
+# 🔥 Fire Alarm Detection & Alert System — ESP32 + AI/ML
 
 ![ESP32](https://img.shields.io/badge/ESP32-E7352C?style=flat-square&logo=espressif&logoColor=white)
 ![TensorFlow Lite](https://img.shields.io/badge/TensorFlow_Lite-FF6F00?style=flat-square&logo=tensorflow&logoColor=white)
@@ -10,7 +10,7 @@ AI-powered IoT device that uses **on-device machine learning** to detect fire al
 
 ---
 
-## ðŸ“¸ Project Images
+## 📸 Project Images
 
 <p>
   <img src="Image%201.jpg" width="45%" />
@@ -19,59 +19,59 @@ AI-powered IoT device that uses **on-device machine learning** to detect fire al
 
 ---
 
-## ðŸ”§ Features
+## 🔧 Features
 
-- **On-Device ML Inference** â€” TensorFlow Lite model running on ESP32 for real-time fire alarm sound pattern recognition
-- **AI Confidence Scoring** â€” Displays detection confidence percentage on OLED screen
-- **WS2812B LED Alerts** â€” Addressable neon LED strip for visual alarm indication
-- **OLED Status Display** â€” Real-time system status, alarm confidence level, and Wi-Fi status
-- **Buzzer Alert** â€” Audible alarm output triggered by ML detection
-- **Cloud Connectivity** â€” Blynk IoT platform integration with mobile app push notifications
-- **Event History** â€” Cloud-stored detection events with timestamps
-- **Wi-Fi Provisioning** â€” Hotspot mode for initial setup without hardcoded credentials
-- **Physical Reset Button** â€” With progress bar animation on OLED
-- **Remote LED Control** â€” Control LED strip color and mode from mobile app
-
----
-
-## ðŸ—ï¸ System Architecture
-
-```
-â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-â”‚                 ESP32 MCU                    â”‚
-â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”‚
-â”‚  â”‚ Sound    â”‚  â”‚ TF Lite  â”‚  â”‚ Blynk    â”‚  â”‚
-â”‚  â”‚ Sensor   â”‚â†’ â”‚ ML Model â”‚â†’ â”‚ Cloud    â”‚  â”‚
-â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â”‚
-â”‚       â†“              â†“             â†“        â”‚
-â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”‚
-â”‚  â”‚  OLED    â”‚  â”‚ WS2812B  â”‚  â”‚  Buzzer  â”‚  â”‚
-â”‚  â”‚ Display  â”‚  â”‚ LED Stripâ”‚  â”‚  Alert   â”‚  â”‚
-â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â”‚
-â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
-         â†•                â†•
-   â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”    â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-   â”‚ Wi-Fi    â”‚    â”‚ Mobile   â”‚
-   â”‚Provision â”‚    â”‚   App    â”‚
-   â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜    â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
-```
+- **On-Device ML Inference** — TensorFlow Lite model running on ESP32 for real-time fire alarm sound pattern recognition
+- **AI Confidence Scoring** — Displays detection confidence percentage on OLED screen
+- **WS2812B LED Alerts** — Addressable neon LED strip for visual alarm indication
+- **OLED Status Display** — Real-time system status, alarm confidence level, and Wi-Fi status
+- **Buzzer Alert** — Audible alarm output triggered by ML detection
+- **Cloud Connectivity** — Blynk IoT platform integration with mobile app push notifications
+- **Event History** — Cloud-stored detection events with timestamps
+- **Wi-Fi Provisioning** — Hotspot mode for initial setup without hardcoded credentials
+- **Physical Reset Button** — With progress bar animation on OLED
+- **Remote LED Control** — Control LED strip color and mode from mobile app
 
 ---
 
-## ðŸ“‚ Project Structure
+## 🏗️ System Architecture
 
 ```
-â”œâ”€â”€ Firmware/              # ESP32 firmware source code
-â”œâ”€â”€ Image 1.jpg            # Project photo
-â”œâ”€â”€ Image 2.jpg            # Project photo
-â”œâ”€â”€ BOM.pdf                # Bill of Materials
-â”œâ”€â”€ FireAlarm_Detector_User_Manual.md  # User manual
-â””â”€â”€ IOT Based FireAlarm Detector.pdf   # Technical documentation
+┌─────────────────────────────────────────────┐
+│                 ESP32 MCU                    │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
+│  │ Sound    │  │ TF Lite  │  │ Blynk    │  │
+│  │ Sensor   │→ │ ML Model │→ │ Cloud    │  │
+│  └──────────┘  └──────────┘  └──────────┘  │
+│       ↓              ↓             ↓        │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
+│  │  OLED    │  │ WS2812B  │  │  Buzzer  │  │
+│  │ Display  │  │ LED Strip│  │  Alert   │  │
+│  └──────────┘  └──────────┘  └──────────┘  │
+└─────────────────────────────────────────────┘
+         ↕                ↕
+   ┌──────────┐    ┌──────────┐
+   │ Wi-Fi    │    │ Mobile   │
+   │Provision │    │   App    │
+   └──────────┘    └──────────┘
 ```
 
 ---
 
-## ðŸ› ï¸ Tech Stack
+## 📂 Project Structure
+
+```
+├── Firmware/              # ESP32 firmware source code
+├── Image 1.jpg            # Project photo
+├── Image 2.jpg            # Project photo
+├── BOM.pdf                # Bill of Materials
+├── FireAlarm_Detector_User_Manual.md  # User manual
+└── IOT Based FireAlarm Detector.pdf   # Technical documentation
+```
+
+---
+
+## 🛠️ Tech Stack
 
 - **MCU:** ESP32
 - **Language:** C/C++
@@ -83,9 +83,9 @@ AI-powered IoT device that uses **on-device machine learning** to detect fire al
 
 ---
 
-## ðŸ‘¤ Author
+## 👤 Author
 
 **Muhammad Zaeem Sarfraz**
-- ðŸ”— [LinkedIn](https://www.linkedin.com/in/zaeemsarfraz7744/)
-- ðŸ“§ Zaeem.7744@gmail.com
-- ðŸŒ Vaasa, Finland
+- 🔗 [LinkedIn](https://www.linkedin.com/in/zaeemsarfraz7744/)
+- 📧 Zaeem.7744@gmail.com
+- 🌍 Vaasa, Finland
